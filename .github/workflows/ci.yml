@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Conn3x
+        env: &gh
+          GH_TOKEN: ${{ github.token }}
+        run: &install |
+          tag=$(gh release view -R conn3xorg/conn3x --json tagName -q .tagName)
+          file="conn3x_${tag#v}_linux_amd64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "https://github.com/conn3xorg/conn3x/releases/download/$tag/$file"
+          curl -sSfLO "https://github.com/conn3xorg/conn3x/releases/download/$tag/checksums.txt"
+          grep " $file\$" checksums.txt | sha256sum -c -
+          mkdir -p bin && tar -xzf "$file" -C bin conn3x
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: conn3x version
+      - run: conn3x fmt -check -recursive
+      - name: Validate
+        run: conn3x init -backend=false && conn3x validate
+      - name: Validate the example
+        working-directory: examples/local
+        run: conn3x init -backend=false && conn3x validate
+
+  e2e:
+    needs: validate
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [rocky10, fedora45, ubuntu2404, debian13]
+    name: e2e (${{ matrix.distro }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The test host images live in the Conn3x repo.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: conn3xorg/conn3x
+          ref: main
+          path: conn3x
+          persist-credentials: false
+          sparse-checkout: test/images
+      - name: Install Conn3x
+        env: *gh
+        run: *install
+      - name: Start the ${{ matrix.distro }} host
+        working-directory: examples/local
+        env:
+          CONTAINERFILE: ${{ github.workspace }}/conn3x/test/images/${{ matrix.distro }}/Containerfile
+        run: ./up.sh
+      # The password and the credential hold every character the shell or
+      # systemd could misread.
+      - name: Apply, then plan again with no changes
+        working-directory: examples/local
+        env:
+          TF_VAR_password: ci-only p$a"ss`w\o'rd
+          TF_VAR_environment: '{ TRICKY = "a$b\"c`d\\e''f" }'
+        run: |
+          conn3x init
+          conn3x apply -auto-approve
+          conn3x plan -detailed-exitcode
+      # Starts the backup unit the timer would, restores a file from the
+      # snapshot and compares it, then checks the retention policy forgot a
+      # snapshot and restic check passes.
+      - name: Back up, restore and forget
+        run: |
+          podman exec -i circuit-restic sh -eu <<'EOF'
+          systemctl is-active conn3x-restic-backup.timer conn3x-restic-check.timer
+          systemctl show -p RandomizedDelayUSec conn3x-restic-backup.timer | grep -qx 'RandomizedDelayUSec=30min'
+          echo "marker $(date +%s%N)" > /root/marker
+          systemctl start conn3x-restic-backup.service
+          n() { conn3x-restic snapshots --json | grep -o '"short_id"' | wc -l; }
+          [ "$(n)" -eq 1 ]
+          rm -rf /tmp/restore
+          conn3x-restic restore latest --target /tmp/restore --include /root/marker
+          diff /root/marker /tmp/restore/root/marker
+          # keep_daily keeps the day's newest snapshot, and restic also keeps
+          # the oldest while the policy has days to fill, so a third run on
+          # the same day forgets the second.
+          systemctl start conn3x-restic-backup.service
+          systemctl start conn3x-restic-backup.service
+          conn3x-restic snapshots --compact
+          [ "$(n)" -eq 2 ]
+          journalctl -u conn3x-restic-backup.service --no-pager | grep 'remove 1 snapshots'
+          systemctl start conn3x-restic-check.service
+          EOF
+      - name: Check the credential reads the same to sh and systemd
+        run: |
+          podman exec -i circuit-restic sh -eu <<'EOF'
+          . /etc/conn3x-restic/environment
+          [ "$TRICKY" = 'a$b"c`d\e'"'"'f' ]
+          [ "$(systemd-run --wait --pipe -q -p EnvironmentFile=/etc/conn3x-restic/environment printenv TRICKY)" = "$TRICKY" ]
+          EOF
+      - name: Clean up
+        if: always()
+        working-directory: examples/local
+        run: ./down.sh
