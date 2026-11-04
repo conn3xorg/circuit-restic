@@ -75,6 +75,19 @@ jobs:
           conn3x init
           conn3x apply -auto-approve
           conn3x plan -detailed-exitcode
+      # The password and environment reach the host write-only, so state holds
+      # none of them, and nothing Conn3x writes under .terraform does either.
+      # State is JSON, which would escape their quotes and backslashes, so it
+      # looks for pieces of each that JSON leaves as they are.
+      - name: Check the secrets stay out of state
+        working-directory: examples/local
+        run: |
+          test -s terraform.tfstate || { echo "No terraform.tfstate to check." >&2; exit 1; }
+          # shellcheck disable=SC2016 # the $ and ` are meant literally
+          if grep -rqF --exclude-dir=modules -e 'ci-only p$a' -e 'ss`w' -e 'c`d' terraform.tfstate .terraform/; then
+            echo "The password or an environment value is in terraform.tfstate or under .terraform/." >&2
+            exit 1
+          fi
       # Starts the backup unit the timer would, restores a file from the
       # snapshot and compares it, then checks the retention policy forgot a
       # snapshot and restic check passes.
