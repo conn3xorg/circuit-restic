@@ -37,7 +37,8 @@ variable "ssh_become" {
 variable "restic_version" {
   type        = string
   default     = "0.19.1"
-  description = "restic release to install, without the leading v."
+  nullable    = false
+  description = "restic release to install, without the leading v. Null means the default."
 
   validation {
     condition     = can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.restic_version))
@@ -47,7 +48,8 @@ variable "restic_version" {
 
 variable "checksums" {
   type        = map(string)
-  description = "SHA-256 of the linux_amd64 and linux_arm64 .bz2 release files, by architecture, x86_64 and aarch64, from the release's SHA256SUMS. Change these with restic_version."
+  nullable    = false
+  description = "SHA-256 of the linux_amd64 and linux_arm64 .bz2 release files, by architecture, x86_64 and aarch64, from the release's SHA256SUMS. Change these with restic_version. Null means the default."
   default = {
     x86_64  = "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c"
     aarch64 = "a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465"

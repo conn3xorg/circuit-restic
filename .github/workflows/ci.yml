@@ -68,7 +68,7 @@ jobs:
       # systemd could misread.
       - name: Apply, then plan again with no changes
         working-directory: examples/local
-        env:
+        env: &secrets
           TF_VAR_password: ci-only p$a"ss`w\o'rd
           TF_VAR_environment: '{ TRICKY = "a$b\"c`d\\e''f" }'
         run: |
@@ -119,6 +119,52 @@ jobs:
           . /etc/conn3x-restic/environment
           [ "$TRICKY" = 'a$b"c`d\e'"'"'f' ]
           [ "$(systemd-run --wait --pipe -q -p EnvironmentFile=/etc/conn3x-restic/environment printenv TRICKY)" = "$TRICKY" ]
+          EOF
+      # Restarting the container boots systemd again, so this checks both
+      # timers come back enabled and a backup still runs and checks out.
+      - name: Restart the host, then back up again and plan with no changes
+        working-directory: examples/local
+        env: *secrets
+        run: |
+          podman restart circuit-restic
+          # systemd's bus can take a moment to come up after the restart.
+          for _ in $(seq 60); do
+            case $(podman exec circuit-restic systemctl is-system-running 2>/dev/null) in running|degraded) break ;; esac
+            sleep 1
+          done
+          podman exec -i circuit-restic sh -eu <<'EOF'
+          systemctl is-active conn3x-restic-backup.timer conn3x-restic-check.timer
+          echo "after restart $(date +%s%N)" > /root/marker
+          systemctl start conn3x-restic-backup.service
+          rm -rf /tmp/restore
+          conn3x-restic restore latest --target /tmp/restore --include /root/marker
+          diff /root/marker /tmp/restore/root/marker
+          systemctl start conn3x-restic-check.service
+          EOF
+          conn3x plan -detailed-exitcode
+      # A fresh host gets restic 0.19.0 and a first snapshot, then the
+      # circuit's own pin is applied over it, the way someone moves to a new
+      # release of this circuit. The new restic has to restore the old
+      # snapshot and pass restic check on the old repository.
+      - name: Upgrade from restic 0.19.0 on a fresh host, then plan again with no changes
+        working-directory: examples/local
+        env: *secrets
+        run: |
+          ./down.sh
+          CONTAINERFILE="$GITHUB_WORKSPACE/conn3x/test/images/${{ matrix.distro }}/Containerfile" ./up.sh
+          conn3x init
+          conn3x apply -auto-approve -var restic_version=0.19.0 \
+            -var 'checksums={x86_64="13176fe6d89d4357947a2cd107218ab2873a5f9d8e1ac2d4cd1c8e07e6839c21",aarch64="e522ce6bf748d753fee8093e8ec59359972cf5b6bc65fc7c7cf38ae952351d91"}'
+          podman exec circuit-restic sh -euc 'restic version | grep -F "restic 0.19.0 "; echo "before $(date +%s%N)" > /root/before-upgrade; systemctl start conn3x-restic-backup.service'
+          conn3x apply -auto-approve
+          conn3x plan -detailed-exitcode
+          want=$(sed -n '/^variable "restic_version"/,/^}/s/^ *default *= *"\(.*\)"/\1/p' ../../variables.tf)
+          podman exec -i circuit-restic sh -eu -s "$want" <<'EOF'
+          restic version | grep -F "restic $1 "
+          rm -rf /tmp/restore
+          conn3x-restic restore latest --target /tmp/restore --include /root/before-upgrade
+          diff /root/before-upgrade /tmp/restore/root/before-upgrade
+          systemctl start conn3x-restic-check.service
           EOF
       - name: Clean up
         if: always()

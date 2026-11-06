@@ -19,6 +19,18 @@ variable "environment" {
   ephemeral = true
 }
 
+# CI sets these to install an older restic first, then upgrades to the
+# circuit's own pin by applying again without them.
+variable "restic_version" {
+  type    = string
+  default = null
+}
+
+variable "checksums" {
+  type    = map(string)
+  default = null
+}
+
 module "restic" {
   source = "../.."
 
@@ -26,6 +38,8 @@ module "restic" {
   ssh_port             = var.port
   ssh_private_key_file = "./id_ed25519"
   ssh_known_hosts_file = "./known_hosts"
+  restic_version       = var.restic_version
+  checksums            = var.checksums
 
   # A repository on the host itself, which is enough to try it. Point it
   # at another machine, such as sftp:backup@203.0.113.20:/srv/restic, for
