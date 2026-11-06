@@ -147,7 +147,7 @@ The new release unpacks beside the old one and `conn3x-restic` points at it. The
 
 ## Requirements
 
-Requires Conn3x v0.6.7 or later, systemd on each host, and outbound HTTPS to github.com.
+Requires Conn3x v0.7.1 or later, systemd on each host, and outbound HTTPS to github.com.
 
 ## Tested on
 
