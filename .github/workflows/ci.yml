@@ -127,7 +127,11 @@ jobs:
         env: *secrets
         run: |
           podman restart circuit-restic
-          podman exec circuit-restic timeout 60 systemctl is-system-running --wait || true
+          # systemd's bus can take a moment to come up after the restart.
+          for _ in $(seq 60); do
+            case $(podman exec circuit-restic systemctl is-system-running 2>/dev/null) in running|degraded) break ;; esac
+            sleep 1
+          done
           podman exec -i circuit-restic sh -eu <<'EOF'
           systemctl is-active conn3x-restic-backup.timer conn3x-restic-check.timer
           echo "after restart $(date +%s%N)" > /root/marker
