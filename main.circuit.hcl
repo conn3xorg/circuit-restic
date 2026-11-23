@@ -228,8 +228,8 @@ circuit "restic" {
   # daemon-reload alone picks up a new delay. Restarting the timer would
   # make it catch up on a missed run straight away.
   step "delay_applied" {
-    command {
-      command  = "systemctl daemon-reload"
+    service_action {
+      action   = "daemon-reload"
       triggers = { delay = conn3x_file.restic__delay[each.key].revision }
     }
   }
